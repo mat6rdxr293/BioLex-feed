@@ -1,0 +1,94 @@
+name: Mirror BioLex from Cloudflare D1
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: biolex-dictionary-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      WORKER_URL: ${{ vars.BIOLEX_WORKER_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and validate published snapshot
+        if: env.WORKER_URL != ''
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          url = os.environ['WORKER_URL'].rstrip('/')
+          parsed = urllib.parse.urlparse(url)
+          if parsed.scheme != 'https' or parsed.hostname is None:
+              raise RuntimeError('A valid HTTPS Worker URL must be configured')
+
+          request = urllib.request.Request(
+              url + '/api/v1/sync?since=0',
+              headers={'Accept': 'application/json', 'User-Agent': 'BioLex-Feed-Mirror/1.0'}
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              data = json.load(response)
+
+          if data.get('full') is not True or not isinstance(data.get('revision'), int):
+              raise RuntimeError('Invalid full snapshot')
+          if data['revision'] < 1:
+              raise RuntimeError('Invalid revision')
+          terms = data.get('terms')
+          deleted = data.get('deleted')
+          if not isinstance(terms, list) or not isinstance(deleted, list):
+              raise RuntimeError('Missing terms or deleted list')
+
+          slugs = set()
+          for term in terms:
+              if not isinstance(term, dict) or not isinstance(term.get('slug'), str):
+                  raise RuntimeError('Invalid term')
+              if term['slug'] in slugs:
+                  raise RuntimeError('Duplicate term')
+              slugs.add(term['slug'])
+
+          output = Path('sync.json')
+          old = json.loads(output.read_text(encoding='utf-8')) if output.exists() else {}
+          old_rev = int(old.get('revision', 0))
+          if data['revision'] < old_rev:
+              raise RuntimeError('Refusing to downgrade feed')
+          if data['revision'] == old_rev:
+              old_canonical = json.dumps(old, sort_keys=True, ensure_ascii=False)
+              new_canonical = json.dumps(data, sort_keys=True, ensure_ascii=False)
+              if old_canonical != new_canonical:
+                  raise RuntimeError('Same revision has different content; manual intervention required')
+              print(f'Already current at revision {old_rev}')
+          else:
+              output.write_text(
+                  json.dumps(data, ensure_ascii=False, indent=2) + '\n',
+                  encoding='utf-8'
+              )
+              print(f'Updated from {old_rev} to {data["revision"]} ({len(terms)} terms)')
+          PY
+
+      - name: Commit updated public feed
+        if: env.WORKER_URL != ''
+        shell: bash
+        run: |
+          if git diff --quiet -- sync.json; then
+            echo "Feed already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sync.json
+          git commit -m "data: mirror Cloudflare published dictionary"
+          git push
