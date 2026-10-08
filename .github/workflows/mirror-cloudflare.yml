@@ -66,8 +66,16 @@ jobs:
           if data['revision'] < old_rev:
               raise RuntimeError('Refusing to downgrade feed')
           if data['revision'] == old_rev:
-              old_canonical = json.dumps(old, sort_keys=True, ensure_ascii=False)
-              new_canonical = json.dumps(data, sort_keys=True, ensure_ascii=False)
+              def normalized(feed):
+                  return {
+                      **feed,
+                      "terms": sorted(feed.get("terms", []), key=lambda item: item["slug"]),
+                      "deleted": sorted(feed.get("deleted", [])),
+                      "changes": sorted(feed.get("changes", []), key=lambda item: item.get("revision", 0)),
+                  }
+
+              old_canonical = json.dumps(normalized(old), sort_keys=True, ensure_ascii=False)
+              new_canonical = json.dumps(normalized(data), sort_keys=True, ensure_ascii=False)
               if old_canonical != new_canonical:
                   raise RuntimeError('Same revision has different content; manual intervention required')
               print(f'Already current at revision {old_rev}')
