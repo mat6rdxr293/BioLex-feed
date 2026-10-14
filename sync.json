@@ -1,5 +1,5 @@
 {
-  "revision": 232,
+  "revision": 234,
   "full": true,
   "terms": [
     {
@@ -4421,7 +4421,8 @@
     "amnion",
     "anastomoz",
     "apeks",
-    "ukorenenie"
+    "ukorenenie",
+    "test"
   ],
   "changes": []
 }
